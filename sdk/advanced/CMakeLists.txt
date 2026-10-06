@@ -8,5 +8,7 @@
 
 add_subdirectory(common)
 add_subdirectory(circle_example)
+add_subdirectory(figure8_example)
+add_subdirectory(helix_example)
 add_subdirectory(take_off_land_example)
 add_subdirectory(waypoint_example)

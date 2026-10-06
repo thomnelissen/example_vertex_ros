@@ -1,0 +1,159 @@
+// Copyright (C) 2024 Avular B.V. - All Rights Reserved
+// You may use this code under the terms of the Avular
+// Software End-User License Agreement.
+//
+// You should have received a copy of the Avular
+// Software End-User License Agreement license with
+// this file, or download it from: avular.com/eula
+//
+/*****************************************************************************
+ * Example of how to fly a figure 8 with the drone.
+ ****************************************************************************/
+#include <CLI11.hpp>
+#include <iostream>
+
+#include <creos/client.hpp>
+#include <creos/messages/controller_state.hpp>
+#include <creos/messages/state_reference.hpp>
+#include <creos/messages/pose.hpp>
+
+#include <common/logging.hpp>
+#include <common/drone_state.hpp>
+#include <common/remote_controller_interface.hpp>
+
+#include "figure8_references.hpp"
+
+void spin(unsigned update_frequency_hz)
+{
+    usleep(1000000 / update_frequency_hz);
+}
+
+creos::Client createClient(const std::string_view host)
+{
+    if(host.empty())
+    {
+        return creos::Client();
+    }
+    return creos::Client(host);
+}
+
+int main(int argc, char **argv)
+{
+    CLI::App app{"Figure 8 Example showcasing how to use the CreOS SDK to fly a figure 8."};
+
+    double           size_m              = 2;
+    double           speed_mps           = 0.5;
+    double           accel_mps2          = 1.0;
+    double           climb_m             = 0.0;
+    bool             frontal             = false;
+    unsigned         update_frequency_hz = 100;
+    ControllerType   controller_type     = ControllerType::kHerelink;
+    std::string_view host                = "";
+
+    app.add_flag(
+        "-v,--verbose", [](auto) { spdlog::set_level(spdlog::level::debug); },
+        "Enable verbose output");
+    app.add_option("--host", host,
+                   "<hostname:port> of the CREOS agent. When omitted, the 'CREOS_HOST:CREOS_PORT' "
+                   "environment variables are used or localhost:7200 is used as a fallback.");
+    app.add_option("-l,--size", size_m,
+                   "Half the length of the figure 8 in meters. Default is 2 meters.");
+    app.add_option("-s,--speed", speed_mps,
+                   "Speed of the drone at the tips of the figure 8 in meters per second. Default "
+                   "is 0.5 m/s.");
+    app.add_option("-a,--accel", accel_mps2,
+                   "Acceleration of the drone in meters per second squared. Default is 1.0 m/s^2.");
+    app.add_option("-c,--climb", climb_m,
+                   "Climb this many meters over the first lobe and descend them over the second. "
+                   "Default is 0 meters.");
+    app.add_flag("--frontal", frontal,
+                 "Turn the nose along the path instead of holding the initial heading.");
+    app.add_option("-f,--frequency", update_frequency_hz,
+                   "Update frequency in Hz. Default is 100 Hz.");
+    app.add_flag_callback(
+        "--jeti", [&controller_type]() { controller_type = ControllerType::kJeti; },
+        "Use Jeti controller instead of Herelink controller");
+
+    CLI11_PARSE(app, argc, argv);
+
+    setup_logging("figure8_example");
+
+    // Check that the speed does not violate the acceleration limits.
+    const double accel_factor = Figure8References::PeakAccelFactor();
+    if(std::pow(speed_mps, 2) * accel_factor > accel_mps2 * size_m)
+    {
+        double new_speed = std::sqrt(accel_mps2 * size_m / accel_factor);
+        spdlog::warn(
+            "The selected speed ({} m/s) and figure 8 size ({} m) violate the acceleration "
+            "limit ({} m/s^2). Adjusting speed to ({} m/s) to fit within the acceleration limits.",
+            speed_mps, size_m, accel_mps2, new_speed);
+        speed_mps = new_speed;
+    }
+
+    // Connect to the CreOS server
+    creos::Client client = createClient(host);
+
+    // Setup DroneState
+    std::shared_ptr<DroneState> drone_state = std::make_shared<DroneState>();
+    client.sensors()->subscribeToPose(drone_state->GetGlobalPoseCallback());
+    client.setpoint_control()->subscribeToCurrentControlSource(
+        drone_state->GetControlSourceCallback());
+    client.diagnostics()->subscribeToState(drone_state->GetStateCallback());
+
+    // Setup Controller input
+    std::shared_ptr<IRemoteController> controller = CreateRemoteController(controller_type);
+    client.sensors()->subscribeToRemoteController(controller->GetControllerStateCallback());
+
+    bool execution_active = false;
+    controller->RegisterActivationButtonCallback(
+        [&execution_active]()
+        {
+            execution_active = !execution_active;
+            spdlog::info("Execution active: {}", execution_active ? "true" : "false");
+        });
+
+    Figure8References figure8_references = Figure8References(
+        update_frequency_hz, size_m, speed_mps, accel_mps2, climb_m, frontal);
+
+    while(true)
+    {
+        if(execution_active)
+        {
+            if(!drone_state->IsInFlight())
+            {
+                // Stop execution immediately if the drone is not airborne when activated
+                spdlog::warn("Stopping execution: drone is not flying. "
+                             "Take off manually before activating the figure 8 example.");
+                execution_active = false;
+                figure8_references.Reset(drone_state->GetPosition(), drone_state->GetYaw());
+            }
+            else if(!drone_state->IsInUserControlMode())
+            {
+                // Stop execution when the drone leaves SDK mode (e.g. switch to position mode).
+                // Reset so the next activation restarts from the current position.
+                spdlog::info(
+                    "Stopping execution: control mode changed away from SDK mode. "
+                    "Press activation button to restart the figure 8 from the current position.");
+                execution_active = false;
+                figure8_references.Reset(drone_state->GetPosition(), drone_state->GetYaw());
+            }
+            else
+            {
+                creos_messages::StateReference state_reference =
+                    figure8_references.GetNewStateReference();
+                client.setpoint_control()->publishStateReference(state_reference);
+            }
+        }
+        // Reset the figure 8 references when the execution is not active so that when the execution
+        // is activated again, the drone will start from its current position and heading.
+        // This is important because the drone might have been moved manually or drifted while the
+        // execution was inactive, and we want to ensure that the figure 8 is generated from the
+        // current position and heading of the drone.
+        else
+        {
+            figure8_references.Reset(drone_state->GetPosition(), drone_state->GetYaw());
+        }
+        spin(update_frequency_hz);
+    }
+    return 0;
+}
