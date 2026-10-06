@@ -1,0 +1,5 @@
+# Files consumed inside Linux containers must keep LF endings
+*.txt text eol=lf
+*.sh text eol=lf
+*Dockerfile text eol=lf
+*.yml text eol=lf
