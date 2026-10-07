@@ -17,6 +17,8 @@ The code is split up into multiple parts:
 
 The figure 8 is a lemniscate of Bernoulli. The drone starts at its current position, which is the crossing of the figure 8, and flies **straight ahead** (in the direction it is facing). The long axis of the figure 8 points 45 degrees to the right of that heading, so the drone curves to the right into the first lobe. The figure 8 is `2 * size` long along its long axis and `0.7 * size` wide.
 
+![Figure 8 trajectory](figure8_geometry.svg)
+
 Its curvature grows from zero at the crossing to its peak at the tips, so the bank builds up smoothly from level and is largest at the tips. The drone never stops, it is banked most of the time, and with `--climb` the thrust changes while it is banked.
 
 ## Figure8References

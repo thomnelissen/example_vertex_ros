@@ -19,6 +19,8 @@ Seen from above, the helix is the circle of the circle example: the circle centr
 
 Over the first `--turns` turns the height goes up smoothly by `--climb`, over the next `--turns` turns back down to the start height, and so on.
 
+![Helix trajectory](helix_geometry.svg)
+
 With `--frontal` the nose turns along the path. The circle centre then lies `radius` to the **right** of the drone instead, so the drone starts flying straight ahead and does not have to turn on the spot first. Otherwise the heading stays the initial heading.
 
 ## HelixReferences
