@@ -81,10 +81,12 @@ void Figure8References::Reset(const std::array<float, 3> position, const double 
                   initial_heading_);
 
     // Restart time so you will begin from the start of the figure 8
-    time_s_ = 0.0;
+    time_s_     = 0.0;
+    time_scale_ = 1.0;
 }
 
-creos_messages::StateReference Figure8References::GetNewStateReference()
+creos_messages::StateReference Figure8References::GetNewStateReference(
+    const std::array<float, 3> &drone_position)
 {
     // Compute the current point on the figure 8.
     auto reference = computeNewPosition(start_point_, initial_heading_, time_s_);
@@ -92,19 +94,49 @@ creos_messages::StateReference Figure8References::GetNewStateReference()
     reference.timestamp = creos::RobotClock::now();
     reference.frame_id  = "map";
 
+    // The reference is a function of time. When the drone falls behind it, slow down time so
+    // the reference waits for the drone instead of running away along the figure 8. The
+    // feedforward is the derivative in time, so it slows down with it.
+    updateTimeScale(reference, drone_position);
+    reference.velocity.linear.x *= time_scale_;
+    reference.velocity.linear.y *= time_scale_;
+    reference.velocity.linear.z *= time_scale_;
+    reference.acceleration.linear.x *= time_scale_ * time_scale_;
+    reference.acceleration.linear.y *= time_scale_ * time_scale_;
+    reference.acceleration.linear.z *= time_scale_ * time_scale_;
+
     // Fly the figure 8 in position mode and attitude mode.
     reference.translation_mode = creos_messages::StateReference::TranslationMode::kPosition;
     reference.orientation_mode = creos_messages::StateReference::OrientationMode::kAttitude;
 
-    spdlog::debug("StateReference -> Position: [{}, {}, {}] Heading: [{}] Start point: [{}, {}, {}]",
+    spdlog::debug("StateReference -> Position: [{}, {}, {}] Heading: [{}] Time scale: [{}] "
+                  "Start point: [{}, {}, {}]",
                   reference.pose.position.x, reference.pose.position.y, reference.pose.position.z,
-                  initial_heading_, start_point_[AxisIndex::kXAxis],
+                  initial_heading_, time_scale_, start_point_[AxisIndex::kXAxis],
                   start_point_[AxisIndex::kYAxis], start_point_[AxisIndex::kZAxis]);
 
-    // Update time for next iteration
-    time_s_ += time_step_s_;
+    // Update time for next iteration, slowed down when the drone is behind
+    time_s_ += time_scale_ * time_step_s_;
 
     return reference;
+}
+
+void Figure8References::updateTimeScale(const creos_messages::StateReference &reference,
+                                       const std::array<float, 3>           &drone_position)
+{
+    // Distance between the setpoint and where the drone is
+    const double error = std::sqrt(
+        std::pow(reference.pose.position.x - drone_position[AxisIndex::kXAxis], 2) +
+        std::pow(reference.pose.position.y - drone_position[AxisIndex::kYAxis], 2) +
+        std::pow(reference.pose.position.z - drone_position[AxisIndex::kZAxis], 2));
+
+    // Full speed when close, waiting when far, and linear in between
+    const double target =
+        std::clamp((kStopErrorM - error) / (kStopErrorM - kFullSpeedErrorM), 0.0, 1.0);
+
+    // Change the time scale gradually, so the setpoint does not jerk
+    const double max_step = kTimeScaleRate * time_step_s_;
+    time_scale_ += std::clamp(target - time_scale_, -max_step, max_step);
 }
 
 const creos_messages::StateReference Figure8References::computeNewPosition(

@@ -12,6 +12,10 @@
 #include <spdlog/spdlog.h>
 #include "eigen3/Eigen/Geometry"
 
+#include <algorithm>
+#include <cassert>
+#include <cmath>
+
 HelixReferences::HelixReferences(double update_frequency_hz,
                                  double circle_radius_m,
                                  double speed_mps,
@@ -41,10 +45,12 @@ void HelixReferences::Reset(const std::array<float, 3> position, const double ya
                   initial_heading_);
 
     // Restart time so you will begin from the start of the helix
-    time_s_ = 0.0;
+    time_s_     = 0.0;
+    time_scale_ = 1.0;
 }
 
-creos_messages::StateReference HelixReferences::GetNewStateReference()
+creos_messages::StateReference HelixReferences::GetNewStateReference(
+    const std::array<float, 3> &drone_position)
 {
     // Compute the current angle in the helix.
     auto reference = computeNewPosition(middle_point_circle_, initial_heading_, time_s_);
@@ -52,20 +58,50 @@ creos_messages::StateReference HelixReferences::GetNewStateReference()
     reference.timestamp = creos::RobotClock::now();
     reference.frame_id  = "map";
 
+    // The reference is a function of time. When the drone falls behind it, slow down time so
+    // the reference waits for the drone instead of running away along the helix. The
+    // feedforward is the derivative in time, so it slows down with it.
+    updateTimeScale(reference, drone_position);
+    reference.velocity.linear.x *= time_scale_;
+    reference.velocity.linear.y *= time_scale_;
+    reference.velocity.linear.z *= time_scale_;
+    reference.acceleration.linear.x *= time_scale_ * time_scale_;
+    reference.acceleration.linear.y *= time_scale_ * time_scale_;
+    reference.acceleration.linear.z *= time_scale_ * time_scale_;
+
     // Fly the helix in position mode and attitude mode.
     reference.translation_mode = creos_messages::StateReference::TranslationMode::kPosition;
     reference.orientation_mode = creos_messages::StateReference::OrientationMode::kAttitude;
 
     spdlog::debug(
-        "StateReference -> Position: [{}, {}, {}] Heading: [{}] Middle point: [{}, {}, {}]",
+        "StateReference -> Position: [{}, {}, {}] Heading: [{}] Time scale: [{}] "
+        "Middle point: [{}, {}, {}]",
         reference.pose.position.x, reference.pose.position.y, reference.pose.position.z,
-        initial_heading_, middle_point_circle_[AxisIndex::kXAxis],
+        initial_heading_, time_scale_, middle_point_circle_[AxisIndex::kXAxis],
         middle_point_circle_[AxisIndex::kYAxis], middle_point_circle_[AxisIndex::kZAxis]);
 
-    // Update time for next iteration
-    time_s_ += time_step_s_;
+    // Update time for next iteration, slowed down when the drone is behind
+    time_s_ += time_scale_ * time_step_s_;
 
     return reference;
+}
+
+void HelixReferences::updateTimeScale(const creos_messages::StateReference &reference,
+                                     const std::array<float, 3>           &drone_position)
+{
+    // Distance between the setpoint and where the drone is
+    const double error = std::sqrt(
+        std::pow(reference.pose.position.x - drone_position[AxisIndex::kXAxis], 2) +
+        std::pow(reference.pose.position.y - drone_position[AxisIndex::kYAxis], 2) +
+        std::pow(reference.pose.position.z - drone_position[AxisIndex::kZAxis], 2));
+
+    // Full speed when close, waiting when far, and linear in between
+    const double target =
+        std::clamp((kStopErrorM - error) / (kStopErrorM - kFullSpeedErrorM), 0.0, 1.0);
+
+    // Change the time scale gradually, so the setpoint does not jerk
+    const double max_step = kTimeScaleRate * time_step_s_;
+    time_scale_ += std::clamp(target - time_scale_, -max_step, max_step);
 }
 
 const creos_messages::StateReference HelixReferences::computeNewPosition(

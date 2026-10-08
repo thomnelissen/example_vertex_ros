@@ -32,9 +32,19 @@ public:
     ~HelixReferences() = default;
 
     void Reset(const std::array<float, 3> position, const double yaw_heading);
-    creos_messages::StateReference GetNewStateReference();
+    // Returns the next setpoint. The drone position is used to wait for the drone when it
+    // falls behind the reference.
+    creos_messages::StateReference GetNewStateReference(
+        const std::array<float, 3> &drone_position);
 
 private:
+    // Below this distance between the reference and the drone, the reference moves at full
+    // speed. Above the stop distance it waits for the drone; slower in between.
+    static constexpr double kFullSpeedErrorM = 0.3;
+    static constexpr double kStopErrorM      = 1.0;
+    // How fast the time scale may change, per second (from 1 to 0 in 0.5 s).
+    static constexpr double kTimeScaleRate = 2.0;
+
     const double time_step_s_;
     const double circle_radius_m_;
     const double speed_mps_;
@@ -43,11 +53,14 @@ private:
     const double turns_;
     const bool   frontal_;
 
+    double               time_scale_          = 1.0; // 1 = full speed, 0 = waiting for the drone
     double               time_s_              = 0.0;
     float                initial_heading_     = 0.0f;
     std::array<float, 3> middle_point_circle_ = {0.0f, 0.0f, 0.0f};
 
     // Helper functions
+    void updateTimeScale(const creos_messages::StateReference &reference,
+                         const std::array<float, 3>           &drone_position);
     const creos_messages::StateReference computeNewPosition(
         const std::array<float, 3> &circle_middle,
         const double                initial_heading,

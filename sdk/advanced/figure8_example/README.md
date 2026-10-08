@@ -29,6 +29,16 @@ The curve angle follows the same law in time as the circle example: it speeds up
 
 With `--climb` the height goes up by `climb` over the first lobe and down by `climb` over the second, every lap, around the start height. With `--frontal` the nose turns along the path; otherwise the heading stays the initial heading.
 
+### Waiting for the drone
+
+The setpoint is a function of time, so on its own it would keep moving along the figure 8 even when the drone falls behind (for example in wind, or at the drone's speed limits). The gap would grow and the drone would cut across to catch up. To prevent this, `GetNewStateReference` takes the drone's current position and slows down the time of the reference when the drone lags:
+
+- Closer than 0.3 m (`kFullSpeedErrorM`): the reference moves at full speed.
+- Further than 1.0 m (`kStopErrorM`): the reference waits for the drone.
+- In between: the reference slows down linearly.
+
+The time scale changes gradually so the setpoint does not jerk. Because the velocity and acceleration feedforward are derivatives in time, they are scaled with it (velocity by the time scale, acceleration by its square). The drone always flies the full path, only slower where it cannot keep up. With `--verbose` the time scale is printed with every setpoint.
+
 ## Main
 
 The main function sets up all the classes and runs the main loop. It will take care of the CLI arguments and will subscribe to the correct API's and register the correct callbacks.

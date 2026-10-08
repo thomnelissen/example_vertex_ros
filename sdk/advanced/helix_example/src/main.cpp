@@ -140,7 +140,7 @@ int main(int argc, char **argv)
             else
             {
                 creos_messages::StateReference state_reference =
-                    helix_references.GetNewStateReference();
+                    helix_references.GetNewStateReference(drone_state->GetPosition());
                 client.setpoint_control()->publishStateReference(state_reference);
             }
         }
